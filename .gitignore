@@ -1,0 +1,56 @@
+# Python bytecode and local virtual environments
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Python test/tool caches and coverage output
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+/htmlcov/
+/coverage.xml
+
+# Generated application-test runtimes and downloaded smoke-test covers
+/tests/.*runtime*/
+/tests/cache/
+
+# Local SQLite databases and transaction sidecars (not application source)
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+
+# Generated logs, temporary files, and machine-specific Windows shortcuts
+*.log
+*.log.*
+*.tmp
+*.temp
+*.lnk
+
+# Local Python build/package output
+/build/
+/dist/
+*.egg-info/
+.eggs/
+
+# Native Messaging preparation output, if generated inside the source checkout.
+# Keep host.py, prepare_host.py, extension resources, and tests tracked.
+/prototypes/native_messaging/host.json
+/prototypes/native_messaging/destination.json
+/prototypes/native_messaging/launch_host.cmd
+/prototypes/native_messaging/register-*.reg
+/prototypes/native_messaging/unregister-*.reg

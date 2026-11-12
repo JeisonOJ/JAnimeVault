@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Planned Transport Test",
+  "version": "0.3.0",
+  "description": "Capture selected text for Planned through the configured native inbox.",
+  "permissions": ["nativeMessaging", "storage", "contextMenus", "scripting"],
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
+  "background": {"service_worker": "background.js"},
+  "action": {"default_popup": "popup.html", "default_title": "Planned Transport Test"}
+}

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Planned Transport Test</title>
+  <style>
+    body { width: 350px; margin: 16px; background: #181b24; color: #eee; font: 14px system-ui; }
+    label, textarea, button { display: block; margin-top: 10px; }
+    textarea { box-sizing: border-box; width: 100%; min-height: 100px; background: #272b38; color: #fff; }
+    button { padding: 8px; }
+    #status, #identity { white-space: pre-wrap; overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <h2>Planned Transport Test</h2>
+  <p>Paste selected text manually. The host selects the inbox. Production captures are imported into Planned on desktop startup.</p>
+  <p id="identity"></p>
+  <label for="site">Optional floating button website (exact origin)</label>
+  <input id="site" type="url" placeholder="https://www.youtube.com">
+  <button id="enable-site" type="button">Enable on this website</button>
+  <button id="disable-site" type="button">Revoke this website</button>
+  <p id="site-status" role="status"></p>
+  <label for="text">Capture text (up to 4096 Unicode characters)</label>
+  <textarea id="text">Re:Zero — 勇者 🌸</textarea>
+  <button id="send" type="button">Send new capture</button>
+  <button id="retry" type="button" disabled>Retry same capture UUID</button>
+  <p id="status" role="status" aria-live="polite"></p>
+  <script src="popup.js"></script>
+</body>
+</html>
