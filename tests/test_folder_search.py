@@ -31,7 +31,8 @@ class FolderSearchTests(unittest.TestCase):
     wait = fixtures.PlannedLinkTests.wait
 
     def controller(self, service):
-        with patch("ui.controller.IndexerService", return_value=IndexerService(self.store)), patch("ui.controller.CoverService", return_value=service):
+        # Prevent an unrelated startup query racing temporary-database cleanup.
+        with patch("ui.controller.IndexerService", return_value=IndexerService(self.store)), patch("ui.controller.CoverService", return_value=service), patch.object(AppController, '_request_items'):
             c = AppController()
         self.controllers.append(c)
         c._selected_drive = "A"

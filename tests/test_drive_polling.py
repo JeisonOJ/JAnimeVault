@@ -11,6 +11,9 @@ from PySide6.QtCore import QCoreApplication
 
 
 class _Store:
+    def archive_source_id(self):
+        return None
+
     def drives(self) -> list[tuple]:
         return []
 

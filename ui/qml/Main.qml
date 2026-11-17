@@ -44,7 +44,7 @@ ApplicationWindow {
         return JSON.stringify([controller.currentView, source ? controller.selectedDrive : "", source ? controller.currentPath : "", controller.searchTerm])
     }
     function activeLibraryView() {
-        if (controller.currentView === "planned") return null
+        if (controller.currentView === "planned" || controller.currentView === "to_archive") return null
         return mixedFolderGrid ? folderContentsGrid : (gridView ? mediaGrid : mediaList)
     }
     function updatePresentation() {
@@ -580,6 +580,7 @@ ApplicationWindow {
     }
 
     function currentDriveTitle() {
+        if (controller.currentView === "to_archive") return "To Archive"
         if (controller.currentView === "planned") return "Planned"
         if (controller.currentView === "favorites") return "Favorites"
         if (controller.currentView === "to_watch") return "To Watch"
@@ -588,6 +589,7 @@ ApplicationWindow {
     }
 
     function currentDriveSubtitle() {
+        if (controller.currentView === "to_archive") return "Compare saved episode indexes — no files are changed"
         if (controller.currentView === "planned") return "Anime to obtain in the future"
         if (controller.currentView === "favorites") return "Favorite anime across all library sources"
         if (controller.currentView === "to_watch") return "Unwatched anime across all library sources"
@@ -859,6 +861,20 @@ ApplicationWindow {
                     onClicked: controller.selectPlanned()
                 }
 
+                CapsuleButton {
+                    id: archiveNavigation
+                    objectName: "archiveNavigation"
+                    text: "To Archive"
+                    Layout.fillWidth: true
+                    highlighted: controller.currentView === "to_archive"
+                    background: Rectangle {
+                        radius: height / 2
+                        color: archiveNavigation.highlighted ? window.accentSoft : (archiveNavigation.hovered ? window.surfaceHover : window.surface)
+                        border.color: archiveNavigation.hovered ? "#555070" : window.line
+                    }
+                    onClicked: controller.selectToArchive()
+                }
+
                 ListView {
                     id: driveList
                     Layout.fillWidth: true
@@ -925,6 +941,14 @@ ApplicationWindow {
                                     removeSourceDialog.open()
                                 }
                             }
+                            SourceMenuItem {
+                                objectName: "archiveSourceAction"
+                                text: drive.id === (controller.archiveSource || "") ? "Clear To Archive source" : "Use as To Archive source"
+                                visible: drive.kind === "folder"
+                                height: visible ? implicitHeight : 0
+                                enabled: drive.kind === "folder" && drive.lastIndexed !== "Not indexed yet" && !drive.indexing
+                                onTriggered: controller.designateArchiveSource(drive.id === controller.archiveSource ? "" : drive.id)
+                            }
                         }
 
                         RowLayout {
@@ -942,7 +966,7 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                                 spacing: 4
                                 Text {
-                                    text: drive.label
+                                    text: drive.label + (drive.id === (controller.archiveSource || "") ? "  · To Archive" : "")
                                     color: window.primary
                                     font.pixelSize: 13
                                     font.weight: Font.DemiBold
@@ -1116,7 +1140,7 @@ ApplicationWindow {
                         font.weight: Font.DemiBold
                     }
                     Item { Layout.fillWidth: true }
-                    Text { text: (controller.currentView === "planned" ? controller.plannedEntries.length : controller.items.length).toLocaleString() + " shown"; color: window.muted; font.pixelSize: 12 }
+                    Text { visible: controller.currentView !== "to_archive"; text: (controller.currentView === "planned" ? controller.plannedEntries.length : controller.items.length).toLocaleString() + " shown"; color: window.muted; font.pixelSize: 12 }
                 }
 
                 Rectangle {
@@ -1127,6 +1151,13 @@ ApplicationWindow {
                     border.color: window.line
                     border.width: 1
                     clip: true
+
+                    Loader {
+                        anchors.fill: parent
+                        anchors.margins: window.contentInset
+                        active: controller.currentView === "to_archive"
+                        sourceComponent: Component { ArchiveView { backend: controller } }
+                    }
 
                     PlannedView {
                         anchors.fill: parent
@@ -1140,7 +1171,7 @@ ApplicationWindow {
                         id: mediaGrid
                         anchors.fill: parent
                         anchors.margins: window.contentInset
-                        visible: !window.mixedFolderGrid && controller.currentView !== "planned" && window.gridView && (controller.currentView !== "source" || controller.selectedDrive.length > 0)
+                        visible: !window.mixedFolderGrid && controller.currentView !== "planned" && controller.currentView !== "to_archive" && window.gridView && (controller.currentView !== "source" || controller.selectedDrive.length > 0)
                         clip: true
                         model: libraryPresentation
                         cellWidth: Math.max(158, Math.floor((width - 10) / Math.max(1, Math.floor(width / 176))))
@@ -1185,7 +1216,7 @@ ApplicationWindow {
                         id: mediaList
                         anchors.fill: parent
                         anchors.margins: 12
-                        visible: controller.currentView !== "planned" && !window.gridView && (controller.currentView !== "source" || controller.selectedDrive.length > 0)
+                        visible: controller.currentView !== "planned" && controller.currentView !== "to_archive" && !window.gridView && (controller.currentView !== "source" || controller.selectedDrive.length > 0)
                         clip: true
                         spacing: 3
                         model: libraryPresentation
@@ -1282,7 +1313,7 @@ ApplicationWindow {
                         anchors.centerIn: parent
                         spacing: 9
                         width: Math.min(350, parent.width - 50)
-                        visible: controller.currentView !== "planned" && (controller.currentView !== "source" || controller.selectedDrive.length > 0) && controller.items.length === 0
+                        visible: controller.currentView !== "planned" && controller.currentView !== "to_archive" && (controller.currentView !== "source" || controller.selectedDrive.length > 0) && controller.items.length === 0
                         Text { anchors.horizontalCenter: parent.horizontalCenter; text: controller.isSearching ? "⌕" : "▱"; color: window.accent; font.pixelSize: 30 }
                         Text { anchors.horizontalCenter: parent.horizontalCenter; text: controller.isSearching ? "No files found" : (controller.currentView === "to_watch" ? "Nothing to watch yet" : (controller.currentView === "favorites" ? "No favorites yet" : "Nothing here yet")); color: window.primary; font.pixelSize: 17; font.weight: Font.DemiBold }
                         Text { anchors.horizontalCenter: parent.horizontalCenter; width: parent.width; text: controller.isSearching ? "No anime or files match your search." : (controller.currentView === "to_watch" ? "Mark an anime folder as To Watch to see it here." : (controller.currentView === "favorites" ? "Mark an anime folder as Favorite to see it here." : "This folder has no indexed items.")); color: window.muted; wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter }

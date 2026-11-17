@@ -41,6 +41,8 @@ class _SidebarProbe:
         self._search_term = ""
         self._items = []
         self._drives = []
+        self._archive_source = ""
+        self.archiveChanged = Mock()
         self.drivesChanged = Mock()
         self.exclusionsChanged = Mock()
         self.selectionChanged = Mock()

@@ -567,6 +567,9 @@ class FallbackSearchTests(unittest.TestCase):
 
 
 class _ControllerStore:
+    def archive_source_id(self):
+        return None
+
     def drives(self) -> list[tuple]:
         return []
 

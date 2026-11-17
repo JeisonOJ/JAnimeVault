@@ -36,6 +36,16 @@ class IndexStore:
             );
             CREATE INDEX IF NOT EXISTS entries_parent ON entries(drive_id, parent);
             CREATE INDEX IF NOT EXISTS entries_name ON entries(drive_id, name);
+            CREATE INDEX IF NOT EXISTS entries_archive_folders ON entries(name,drive_id,path) WHERE is_folder=1;
+            CREATE TABLE IF NOT EXISTS archive_tracking_settings (
+              singleton INTEGER PRIMARY KEY CHECK(singleton=1), source_id TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS archive_folder_links (
+              source_id TEXT NOT NULL, normalized_path TEXT NOT NULL,
+              destination_source_id TEXT NOT NULL, destination_path TEXT NOT NULL,
+              confirmed_at TEXT NOT NULL DEFAULT (datetime('now')),
+              PRIMARY KEY(source_id, normalized_path)
+            );
             CREATE TABLE IF NOT EXISTS anime_cover_cache (
               normalized_name TEXT PRIMARY KEY,
               anilist_id INTEGER,
@@ -391,17 +401,30 @@ class IndexStore:
     def remove_folder_source(self, source_id: str) -> None:
         """Unregister a folder without touching its existing index records."""
         with self.conn:
+            self._delete_archive_source(source_id)
             self.conn.execute("DELETE FROM folder_sources WHERE id=?", (source_id,))
             self.conn.execute("DELETE FROM source_preferences WHERE source_id=?", (source_id,))
 
     def exclude_drive(self, source_id: str) -> None:
         """Persistently hide an automatically detected drive without deleting its index."""
         with self.conn:
+            self._delete_archive_source(source_id)
             self.conn.execute(
                 "INSERT INTO source_preferences(source_id,custom_label,excluded) VALUES(?,NULL,1) "
                 "ON CONFLICT(source_id) DO UPDATE SET excluded=1",
                 (source_id,),
             )
+
+    def archive_source_id(self) -> str | None:
+        """Read the designation without installing tracker query functions."""
+        row = self.conn.execute('SELECT source_id FROM archive_tracking_settings WHERE singleton=1').fetchone()
+        return row[0] if row else None
+
+    def _delete_archive_source(self, source_id: str) -> None:
+        """Called in the source-removal transaction; disconnects never call this."""
+        self.conn.execute("DELETE FROM archive_tracking_settings WHERE source_id=?", (source_id,))
+        self.conn.execute("DELETE FROM archive_folder_links WHERE source_id=? OR destination_source_id=?",
+                          (source_id, source_id))
 
     def include_drive(self, source_id: str) -> None:
         """Allow a previously excluded physical drive to be detected again."""

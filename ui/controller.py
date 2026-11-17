@@ -6,6 +6,7 @@ import os
 import threading
 import uuid
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtCore import QUrl, QUrlQuery, QObject, Property, QTimer, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QGuiApplication
@@ -15,6 +16,8 @@ from indexer.database import IndexStore
 from indexer.drives import POLL_SECONDS
 from indexer.service import IndexerService
 from indexer.planned_imports import ImportReport, import_inbox
+from indexer.archive_tracking import ArchiveTracker
+from ui.archive_presentation import overview_page
 
 
 class AppController(QObject):
@@ -23,6 +26,8 @@ class AppController(QObject):
     drivesChanged = Signal()
     itemsChanged = Signal()
     plannedChanged = Signal()
+    archiveChanged = Signal()
+    _archiveFinished = Signal(int, str, int, object)
     plannedBusyChanged = Signal()
     plannedSearchChanged = Signal()
     _plannedQueryFinished = Signal(int, object)
@@ -46,6 +51,13 @@ class AppController(QObject):
         self._drives: list[dict] = []
         self._items: list[dict] = []
         self._planned_entries: list[dict] = []
+        self._archive_executor = None
+        self._archive_tokens = {}
+        self._archive_source = self.service.store.archive_source_id() or ""
+        self._archive_after = ""
+        self._archive_state = {"items": [], "busy": False, "error": "", "nextAfter": "", "summary": ""}
+        self._archive_picker = {"path": "", "items": [], "busy": False, "error": "", "truncated": False}
+        self._archive_detail = {"path": "", "text": "", "busy": False}
         self._planned_pending: dict[str, int] = {}
         self._candidate_request = None
         self._folder_search_target = None
@@ -74,6 +86,7 @@ class AppController(QObject):
         self._to_watch_search = ""
         self._planned_search = ""
         self._source_search = ""
+        self._archive_search = ""
         self._current_path = ""
         self._search_term = ""
         self._query_number = 0
@@ -87,6 +100,7 @@ class AppController(QObject):
         self._capture_import_manual = False
         self._queryFinished.connect(self._apply_query)
         self._plannedQueryFinished.connect(self._apply_planned_query)
+        self._archiveFinished.connect(self._apply_archive)
         self._eventsReady.connect(self._handle_events)
         self._drivePollFinished.connect(self._handle_drive_poll_result)
         self._captureImportsFinished.connect(self._apply_capture_imports)
@@ -115,6 +129,195 @@ class AppController(QObject):
     @Property("QVariantList", notify=plannedChanged)
     def plannedEntries(self) -> list[dict]:
         return self._planned_entries
+
+    @Property(str, notify=archiveChanged)
+    def archiveSource(self):
+        return self._archive_source
+
+    @Property('QVariantMap', notify=drivesChanged)
+    def archiveSourceStatus(self):
+        return next((s for s in self._drives if s['id'] == self._archive_source), {})
+
+    @Property('QVariantMap', notify=archiveChanged)
+    def archiveState(self):
+        return self._archive_state
+
+    @Property('QVariantMap', notify=archiveChanged)
+    def archivePicker(self):
+        return self._archive_picker
+
+    @Property('QVariantMap', notify=archiveChanged)
+    def archiveDetail(self):
+        return self._archive_detail
+
+    def _archive_submit(self, kind, args=()):
+        if self._shutting_down:
+            return
+        token = self._archive_tokens.get(kind, 0) + 1
+        self._archive_tokens[kind] = token
+        if self._archive_executor is None:
+            self._archive_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='archive-index')
+        availability = {s['id']: {'connected': s['connected'],
+            'root': self.service.connected.get(s['id'], ('', '', None))[2]} for s in self._drives}
+        self._archive_executor.submit(self._archive_worker, self._query_number, kind, token,
+                                      self._archive_source, self._search_term, availability, args)
+
+    def _archive_worker(self, generation, kind, token, source, term, availability, args):
+        store = None
+        try:
+            store = IndexStore()
+            tracker = ArchiveTracker(store, availability)
+            if kind == 'designate':
+                tracker.designate(args[0] or None)
+                data = {}
+            else:
+                if (tracker.active_source() or '') != source:
+                    raise ValueError('The To Archive source changed; refresh before continuing.')
+                if kind == 'overview':
+                    page = overview_page(tracker, args[0], term)
+                    rows = page['items']
+                    manual_links = store.manual_links(source)
+                    for result in rows:
+                        row = result['temporary']
+                        manual = manual_links.get(store.manual_folder_path(row['path']))
+                        cached = store.cover_result(normalize_anime_name(row['name']))
+                        image = manual[2] if manual else (cached[2] if cached and cached[3] == 'found' else '')
+                        result['coverUrl'] = local_file_url(image) if valid_cached_image(image) else ''
+                    data = dict(page, summary=f'Page {page["offset"]//25+1} · {len(rows)} of {page["total"]} anime · ordered by action needed',
+                                context=source + '\n' + term, source=tracker.sources().get(source, {}))
+                elif kind == 'picker':
+                    data = tracker.search_destinations(args[1])
+                    data['path'] = args[0]
+                elif kind.startswith('details:'):
+                    result = tracker.compare(args[0])
+                    lines = []
+                    comparison = result.get('comparison')
+                    if comparison:
+                        for key, label in [('archived', 'Archived'), ('pending', 'Pending'), ('both', 'Present in both')]:
+                            lines.append(label + ' (distinct identifiers)')
+                            for identifier in comparison[key][:200]:
+                                names = comparison['destination_files'].get(identifier, []) if key == 'archived' else comparison['temporary_files'].get(identifier, [])
+                                if key == 'both':
+                                    names = names + comparison['destination_files'].get(identifier, [])
+                                whole, dot, fraction = identifier.partition('.')
+                                label_id = whole.zfill(2) + (dot + fraction if dot else '')
+                                lines.append(label_id + ': ' + ' | '.join(names[:10]))
+                                if len(names) > 10: lines.append(f'… {len(names)-10} more filenames for this identifier')
+                            if len(comparison[key]) > 200:
+                                lines.append('Showing first 200 identifiers; narrow the source to inspect more.')
+                            if not comparison[key]: lines.append('None recognized')
+                        lines.append('Unknown / ambiguous files requiring review')
+                        for side, unknown in comparison['unknown'].items():
+                            lines.extend(side + ': ' + item['filename'] + ' — ' + item['reason'] for item in unknown[:200])
+                            if len(unknown) > 200: lines.append(side + ': showing first 200 unknown files.')
+                        if not any(comparison['unknown'].values()): lines.append('None')
+                    else:
+                        lines.append('No reliable episode comparison: ' + result.get('comparison_state', result['state']))
+                    if any(result.get('nested_content_review', {}).values()):
+                        lines.append('Nested folders require review; their files are not included.')
+                    data = {'path': args[0], 'text': '\n'.join(lines)}
+                elif kind in ('confirm', 'unlink'):
+                    if kind == 'confirm': tracker.confirm(*args)
+                    else: tracker.unlink(args[0])
+                    data = {}
+                else:
+                    raise ValueError('Unknown archive operation.')
+            data.update(sourceId=tracker.active_source() or '', error='', busy=False)
+        except Exception as exc:
+            data = {'error': str(exc), 'busy': False, 'sourceId': source}
+        finally:
+            if store is not None: store.conn.close()
+        self._archiveFinished.emit(generation, kind, token, data)
+
+    @Slot(int, str, int, object)
+    def _apply_archive(self, generation, kind, token, data):
+        if self._shutting_down or token != self._archive_tokens.get(kind): return
+        mutation = kind in ('designate', 'confirm', 'unlink')
+        if mutation:
+            self._archive_source = self.service.store.archive_source_id() or ''
+            if data['error']: self._set_status(data['error'], 'warning')
+            else: self._set_status('To Archive updated.', 'success')
+            self.archiveChanged.emit()
+            if kind == 'designate': self._refresh_drives()
+            if self.currentView == 'to_archive': self._request_items()
+            return
+        if generation != self._query_number or self.currentView != 'to_archive': return
+        if kind == 'overview':
+            self._archive_state = data
+            if 'offset' in data: self._archive_after = str(data['offset'])
+        elif kind == 'picker': self._archive_picker = data
+        elif kind.startswith('details:'): self._archive_detail = dict(data, text=data.get('text', data.get('error', '')))
+        self.archiveChanged.emit()
+
+    @Slot()
+    def selectToArchive(self):
+        self._select_global_view('to_archive')
+
+    @Slot(str)
+    def designateArchiveSource(self, source_id):
+        self._archive_after = ''
+        self._archive_submit('designate', (source_id,))
+
+    @Slot()
+    def nextArchivePage(self):
+        self._archive_after = self._archive_state.get('nextAfter', '')
+        self._request_items()
+
+    @Slot()
+    def refreshArchive(self):
+        self._request_items()
+
+    @Slot()
+    def previousArchivePage(self):
+        self._archive_after = str(max(0, self._archive_state.get('offset', 0)-25))
+        self._request_items()
+
+    @Slot()
+    def reindexArchiveSource(self):
+        """Explicitly re-index only the designation, never the selected Library drive."""
+        source = self.service.store.archive_source_id()
+        if not source or not source.startswith('folder:') or source in self.service.indexing:
+            return
+        try:
+            started = self.service.reindex(source)
+        except OSError as exc:
+            self._set_status(f'Could not re-index To Archive source: {exc}', 'error')
+            return
+        if not started:
+            self._set_status('Make the To Archive source available before re-indexing it.', 'warning')
+            return
+        self._set_status('Indexing To Archive source…', mode='operation')
+        self.indexingChanged.emit()
+        self._refresh_drives()
+
+    @Slot(str)
+    def loadArchiveDetails(self, path):
+        self._archive_detail = {'path': path, 'text': '', 'busy': True}
+        self.archiveChanged.emit()
+        self._archive_submit('details:' + path, (path,))
+
+    @Slot(str, str, str)
+    def searchArchiveDestinations(self, path, term, temporary_source):
+        if temporary_source != self._archive_source: return
+        self._archive_picker = {'path': path, 'items': [], 'busy': True, 'error': '', 'truncated': False}
+        self.archiveChanged.emit()
+        self._archive_submit('picker', (path, term))
+
+    @Slot()
+    def cancelArchivePicker(self):
+        self._archive_tokens['picker'] = self._archive_tokens.get('picker', 0) + 1
+
+    @Slot(str, str, str, str)
+    def confirmArchiveDestination(self, path, source_id, destination, temporary_source):
+        if temporary_source != self._archive_source:
+            self._set_status('The To Archive source changed; choose the destination again.', 'warning')
+            return
+        self._archive_submit('confirm', (path, source_id, destination))
+
+    @Slot(str, str)
+    def unlinkArchiveDestination(self, path, temporary_source):
+        if temporary_source != self._archive_source: return
+        self._archive_submit('unlink', (path,))
 
     @Property(bool, notify=plannedBusyChanged)
     def plannedBusy(self) -> bool:
@@ -340,7 +543,7 @@ class AppController(QObject):
         if self.currentView == view:
             return
         if self.currentView == "planned": self.cancelPlannedSearch()
-        search_fields = {"source": "_source_search", "favorites": "_favorites_search", "to_watch": "_to_watch_search", "planned": "_planned_search"}
+        search_fields = {"source": "_source_search", "favorites": "_favorites_search", "to_watch": "_to_watch_search", "planned": "_planned_search", "to_archive": "_archive_search"}
         setattr(self, search_fields[self.currentView], self._search_term)
         self._search_term = getattr(self, search_fields[view])
         self._current_view = view
@@ -576,7 +779,10 @@ class AppController(QObject):
 
     @Slot()
     def shutdown(self) -> None:
-        """Stop scheduling work; daemon workers are allowed to finish without blocking exit."""
+        """Stop scheduling; finish bounded archive work before releasing services."""
+        self._shutting_down = True
+        if self._archive_executor is not None:
+            self._archive_executor.shutdown(wait=True, cancel_futures=True)
         self._drive_timer.stop()
         self._event_timer.stop()
         self._cover_event_timer.stop()
@@ -591,7 +797,7 @@ class AppController(QObject):
         if drive_id == self._selected_drive and self.currentView == "source":
             return
         if self.currentView != "source":
-            setattr(self, {"favorites": "_favorites_search", "to_watch": "_to_watch_search", "planned": "_planned_search"}[self.currentView], self._search_term)
+            setattr(self, {"favorites": "_favorites_search", "to_watch": "_to_watch_search", "planned": "_planned_search", "to_archive": "_archive_search"}[self.currentView], self._search_term)
             self._search_term = self._source_search if drive_id == self._selected_drive else ""
             self._current_view = "source"
             if drive_id == self._selected_drive:
@@ -630,6 +836,7 @@ class AppController(QObject):
         if not self._selected_drive and self.currentView == "source":
             return
         self._search_term = term.strip()
+        if self.currentView == 'to_archive': self._archive_after = ''
         self.selectionChanged.emit()
         self._request_items()
 
@@ -638,6 +845,7 @@ class AppController(QObject):
         if not self._selected_drive and self.currentView == "source":
             return
         self._search_term = ""
+        if self.currentView == 'to_archive': self._archive_after = ''
         self.selectionChanged.emit()
         self._request_items()
 
@@ -943,6 +1151,10 @@ class AppController(QObject):
                 self.indexingChanged.emit()
 
     def _refresh_drives(self) -> None:
+        active_archive = self.service.store.archive_source_id() or ''
+        if active_archive != self._archive_source:
+            self._archive_source = active_archive
+            self.archiveChanged.emit()
         previous_sources = self._drives
         connected = self.service.connected
         self.service.refresh_folder_sources()
@@ -996,6 +1208,7 @@ class AppController(QObject):
                 }
             )
         self._refresh_exclusions()
+        self._drives.sort(key=lambda source: source['id'] != self._archive_source)
         self.drivesChanged.emit()
         if self.currentView != "source" and previous_sources != self._drives:
             self._request_items()
@@ -1019,6 +1232,12 @@ class AppController(QObject):
     def _request_items(self) -> None:
         self._query_number += 1
         query_number = self._query_number
+        if self.currentView == 'to_archive':
+            self._archive_source = self.service.store.archive_source_id() or ''
+            self._archive_state = dict(self._archive_state, busy=True, error='')
+            self.archiveChanged.emit()
+            self._archive_submit('overview', (self._archive_after,))
+            return
         drive_id = self._selected_drive
         path = self._current_path
         term = self._search_term
@@ -1108,7 +1327,7 @@ class AppController(QObject):
     @Slot(int, int)
     def requestCoversForRange(self, first_visible: int, last_visible: int) -> None:
         """Queue only visible folder cards plus four upcoming cards for cover lookup."""
-        if self.currentView == "planned":
+        if self.currentView in ("planned", "to_archive"):
             return
         if not self._items:
             return
