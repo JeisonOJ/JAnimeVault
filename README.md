@@ -168,6 +168,16 @@ Users are responsible for ensuring that the content they manage complies with ap
 
 JAnimeVault is an independent hobby project and is not affiliated with or endorsed by anime studios, publishers, or distributors.
 
+## ☕ Support the Project
+
+JAnimeVault is a personal hobby project, developed with passion and shared freely as open-source software.
+
+If you find it useful and would like to support its development, you can buy me a coffee. Any contribution is greatly appreciated and entirely voluntary!
+
+☕ [**Support me on Ko-fi**](https://ko-fi.com/jeisonoj)
+
+Your support motivates me to keep learning, improving my projects, and sharing new ideas with the community.
+
 ## License and acknowledgments
 
 Original project code that the maintainer has the rights to license is available
